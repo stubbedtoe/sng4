@@ -1,0 +1,94 @@
+# View Memoization
+
+## Skipping Stable Subtrees {#overview}
+
+Every Model change calls view again. Foldkit builds the next VNode tree and diffs it against the previous tree. Most views need no extra optimization, but a large subtree that rarely changes can repeat the same construction and diff work on every render.
+
+Foldkit provides two memoization helpers:
+
+- `createLazy` caches a view rendered at one position.
+- `createKeyedLazy` gives one view function a separate cache for each list item, entity, or call site.
+
+Each helper caches the VNode returned by a view function. On a later live render, Foldkit reuses it when the function and every argument still have the same references. The DOM differ sees the same VNode object and skips the subtree.
+
+## createLazy {#create-lazy}
+
+`createLazy` creates one memoization slot. Declare it at module scope, then use it to wrap an expensive subtree rendered at one position.
+
+::Snippet{name="createLazy" label="Using createLazy"}
+
+Both the view function and the lazy slot must stay at module scope. Defining either inside view creates a new reference on every render, so the cache always misses.
+
+Arguments are compared by reference, not by value. This works with [modifyFields](/best-practices/immutability#immutable-updates): an unchanged Model branch keeps its reference, so a lazy view receiving that branch can reuse its VNode.
+
+## createKeyedLazy {#create-keyed-lazy}
+
+`createKeyedLazy` stores an independent memoization slot for every key. Use it when one view function renders several positions, such as rows in a list.
+
+::Snippet{name="createKeyedLazy" label="Using createKeyedLazy"}
+
+When one item changes, its slot misses while unchanged items return their cached VNodes. The parent view still traverses the list, but it does not rebuild or diff each unchanged item subtree.
+
+:::Warning{label="One slot per position"}
+A cached VNode can appear at only one position in the tree. Foldkit records its DOM element on the VNode object. Reusing that object at two positions can duplicate or move the wrong DOM node. Give each position its own key. For example: use separate keys for desktop and mobile instances of the same navigation view.
+:::
+
+## Keying by Entity Identity {#key-by-entity-identity}
+
+A keyed lazy also separates entities rendered at the same position. A blog with a bounded post registry can use `{ evict: 'None' }` to cache each post by slug. Returning to a previous post can then reuse its VNode instead of rebuilding it.
+
+Use the same stable Model identifier for memoization and [DOM identity](/best-practices/keying#keys-and-view-identity). A post addressed by `post.slug` uses `post.slug`. A row keyed with `todo.id` uses `todo.id`. One identifier then names the entity in both systems.
+
+::Snippet{name="createKeyedLazyEntity" label="Memoizing an entity view by its identifier"}
+
+Keys can also identify fixed call sites. If one view function renders in two places, give those positions distinct keys instead of maintaining two `createLazy` slots.
+
+## Evicting unused keys
+
+`createKeyedLazy()` releases entries absent from the latest completed render. Removing a row from a list or scrolling it out of a virtual window releases its keyed cache entry. Rows present in the next render retain their cache hits.
+
+::Snippet{name="createKeyedLazyEviction" label="Releasing unused row entries"}
+
+A cached parent preserves the entries used by its children. Cache writes roll back if view construction fails. Each runtime and server render has its own cache, so rendering another app or request cannot evict the first app's rows.
+
+Pass `{ evict: 'None' }` when a bounded cache must reuse entries after their keys are absent from a render. A fixed route table or post registry can use this to reuse an entity view on a later visit. Each retained entry holds its VNode and DOM element, including after that element leaves the document. Use the default for lists whose row identities can grow.
+
+## When to Use Lazy Views {#when-to-use-lazy}
+
+### Good Candidates
+
+Consider a lazy view when:
+
+- A large subtree changes less often than its parent.
+- A long list usually changes only a few items.
+- Profiling shows that building or diffing a view is expensive.
+
+### Verify with Profiling
+
+Do not add lazy views to every function. Small views and inputs that change on every render receive no useful cache hits. Confirm the repeated work with the [slow warnings](/core/slow-warnings) and a profiler first.
+
+:::Info{label="How it works under the hood"}
+Foldkit's differ compares the old and new VNode by reference before diffing. When they are the same object, it skips attribute comparison, child reconciliation, and DOM updates.
+
+The active dispatch is also part of the internal cache key because event handlers close over it. A DevTools replay uses a non-live dispatch, so Foldkit rebuilds the subtree before returning to the live application even when the function and arguments are unchanged.
+:::
+
+## Testing Cache Reuse
+
+Use `Lazy.expectAllReused` from `foldkit/test` to check that lazy views reuse their cached results. It renders the view twice with the same Model and throws if any lazy call misses its cache on the second render.
+
+::Snippet{name="lazyExpectAllReused" label="Checking lazy cache reuse"}
+
+The error identifies each cache miss by slot number, includes the key for keyed calls, and gives a hint for each kind of miss. For `ArgumentsChanged`, it lists the changed argument indices, starting at zero.
+
+Slot numbers follow the order in which lazy instances are first called on the second render. All keys from one `createKeyedLazy` instance share a slot number.
+
+### Choosing Models to Test
+
+Test each Model state that renders different memoized content. For example, a view whose Model has an `activeTab` field needs a case for each tab:
+
+::Snippet{name="lazyExpectAllReusedStates" label="Checking cache reuse for each tab"}
+
+The helper throws when the second render makes no lazy calls. Choose Models that render the memoized content you want to test. For keyed lists, include several items so the test exercises separate cache entries. Use the view's other tests for states that make no lazy calls.
+
+An outer lazy cache hit skips its child view. Test that child view directly to check the lazy calls inside it. A passing assertion covers only the lazy calls made during the second render.
