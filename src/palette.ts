@@ -1,134 +1,94 @@
 import { Array, Option, pipe } from 'effect'
 
-import { EMPTY_COLOR } from './constant'
-import { type Cell, type HexColor, HexColor as HexColorSchema } from './model'
+import type { Palette } from './converter/model'
 
-export type PaletteTheme = Readonly<{
-  name: string
-  colors: ReadonlyArray<HexColor>
-}>
+// Seeds for a new custom palette. Real thread catalogues (DMC, Anchor) can
+// become another palette source later; until then a custom palette is a list
+// of generic colours.
 
-export const hex = (value: string): HexColor => HexColorSchema.make(value)
-
-export const PALETTE_THEMES: Array.NonEmptyReadonlyArray<PaletteTheme> = [
-  {
-    name: 'Syntax',
-    colors: [
-      '#262427',
-      '#545452',
-      '#8a869c',
-      '#fcfcfa',
-      '#ff7272',
-      '#ff9eb0',
-      '#bcdf59',
-      '#ffca58',
-      '#f5a623',
-      '#49cae4',
-      '#a093e2',
-      '#6b5ce7',
-      '#e06cc0',
-      '#3d8b6e',
-      '#9e6a3f',
-      '#1c1a20',
-    ].map(hex),
-  },
-  {
-    name: 'ISO50',
-    colors: [
-      '#2b2b2b',
-      '#5c4b3e',
-      '#8b6f4e',
-      '#c49a6c',
-      '#e8c88a',
-      '#f2dfa7',
-      '#c0785c',
-      '#a85c3b',
-      '#7b8f6a',
-      '#a3b18a',
-      '#6b8e8e',
-      '#8fa4a9',
-      '#c4b4a0',
-      '#e8d5c0',
-      '#d4a574',
-      '#f5efe6',
-    ].map(hex),
-  },
-  {
-    name: 'Sunset',
-    colors: [
-      '#1a1033',
-      '#2d1b4e',
-      '#5c2d82',
-      '#8b3fa0',
-      '#c9406c',
-      '#e85d75',
-      '#ff7b5a',
-      '#ff9e3d',
-      '#ffc233',
-      '#ffe066',
-      '#fff4b8',
-      '#3d1f6d',
-      '#ffa0b4',
-      '#ff6b8a',
-      '#ffccd5',
-      '#1e0f3d',
-    ].map(hex),
-  },
-  {
-    name: 'Ocean',
-    colors: [
-      '#0a1628',
-      '#132b4a',
-      '#1a4a6e',
-      '#2274a5',
-      '#30a5c8',
-      '#5ec4d4',
-      '#8edce6',
-      '#b8efe8',
-      '#e0f7ef',
-      '#f5a962',
-      '#e87843',
-      '#d4bc94',
-      '#f0e6d0',
-      '#2a6b5a',
-      '#c45b3d',
-      '#ffffff',
-    ].map(hex),
-  },
-  {
-    name: 'Mono',
-    colors: [
-      '#000000',
-      '#111111',
-      '#222222',
-      '#444444',
-      '#666666',
-      '#888888',
-      '#aaaaaa',
-      '#cccccc',
-      '#eeeeee',
-      '#ffffff',
-      '#e63946',
-      '#457b9d',
-      '#2a9d8f',
-      '#e9c46a',
-      '#264653',
-      '#f4a261',
-    ].map(hex),
-  },
+export const SEED_HEXES: Array.NonEmptyReadonlyArray<string> = [
+  '#262427',
+  '#fcfcfa',
+  '#ff7272',
+  '#bcdf59',
+  '#ffca58',
+  '#49cae4',
+  '#a093e2',
+  '#e06cc0',
+  '#3d8b6e',
+  '#9e6a3f',
+  '#8a869c',
+  '#545452',
 ]
 
-export const resolveColor = (cell: Cell, theme: PaletteTheme): HexColor =>
-  Option.match(cell, {
-    onNone: () => EMPTY_COLOR,
-    onSome: index => theme.colors[index] ?? EMPTY_COLOR,
-  })
+export const seedCustomPalette = (): Palette => ({
+  source: 'supplied',
+  entries: SEED_HEXES.map((hex, index) => ({
+    brand: 'Custom',
+    number: `C${index + 1}`,
+    name: `Colour ${index + 1}`,
+    colour: {
+      red: Number.parseInt(hex.slice(1, 3), 16),
+      green: Number.parseInt(hex.slice(3, 5), 16),
+      blue: Number.parseInt(hex.slice(5, 7), 16),
+    },
+  })),
+})
 
-export const currentPaletteTheme = (
-  model: Readonly<{ paletteThemeIndex: number }>,
-): PaletteTheme =>
-  pipe(
-    PALETTE_THEMES,
-    Array.get(model.paletteThemeIndex),
-    Option.getOrElse(() => Array.headNonEmpty(PALETTE_THEMES)),
+export const renumberPalette = (palette: Palette): Palette => ({
+  source: palette.source,
+  entries: palette.entries.map((entry, index) => ({
+    ...entry,
+    number: `C${index + 1}`,
+    name: `Colour ${index + 1}`,
+  })),
+})
+
+export const paletteHexes = (palette: Palette): ReadonlyArray<string> =>
+  palette.entries.map(entry =>
+    pipe(
+      [entry.colour.red, entry.colour.green, entry.colour.blue],
+      channels =>
+        `#${channels
+          .map(channel =>
+            Math.max(0, Math.min(255, Math.round(channel)))
+              .toString(16)
+              .padStart(2, '0'),
+          )
+          .join('')}`,
+    ),
   )
+
+export const colourToHexString = (colour: {
+  red: number
+  green: number
+  blue: number
+}): string =>
+  `#${[colour.red, colour.green, colour.blue]
+    .map(channel =>
+      Math.max(0, Math.min(255, Math.round(channel)))
+        .toString(16)
+        .padStart(2, '0'),
+    )
+    .join('')}`
+
+export const hexToColourOption = (
+  hex: string,
+): Option.Option<Palette['entries'][number]['colour']> => {
+  const match = /^#?([0-9a-f]{6})$/i.exec(hex.trim())
+  if (match === null || match[1] === undefined) {
+    return Option.none()
+  }
+  const value = match[1]
+  return Option.some({
+    red: Number.parseInt(value.slice(0, 2), 16),
+    green: Number.parseInt(value.slice(2, 4), 16),
+    blue: Number.parseInt(value.slice(4, 6), 16),
+  })
+}
+
+export const colourAt = (
+  palette: Palette,
+  index: number,
+): Option.Option<Palette['entries'][number]> =>
+  Array.get(palette.entries, index)

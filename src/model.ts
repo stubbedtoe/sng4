@@ -1,84 +1,116 @@
 import { Option, Schema } from 'effect'
+import { defineTaggedUnion } from 'foldkit/schema'
 
-import { Dialog, Listbox, RadioGroup } from '@foldkit/ui'
+import {
+  Palette as PaletteSchema,
+  Pattern,
+  RasterImage,
+  TargetSide,
+} from './converter/model'
+import {
+  DitherAlgorithm,
+  PaletteSpec,
+  Project,
+  Transformation,
+} from './domain/Transformation'
 
-// CONSTANT
-
-export const PaletteIndex = Schema.Literals([
-  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-])
-export type PaletteIndex = typeof PaletteIndex.Type
-
-export const HexColor = Schema.String.check(
-  Schema.isPattern(/^#[0-9a-f]{6}$/),
-).pipe(Schema.brand('HexColor'))
-export type HexColor = typeof HexColor.Type
-
-export const Tool = Schema.Literals(['Brush', 'Fill', 'Eraser'])
-export type Tool = typeof Tool.Type
-
-export const MirrorMode = Schema.Literals([
-  'None',
-  'Horizontal',
-  'Vertical',
-  'Both',
-])
-export type MirrorMode = typeof MirrorMode.Type
-
-export const Cell = Schema.Option(PaletteIndex)
-export type Cell = typeof Cell.Type
-
-const Row = Schema.Array(Cell)
-export const Grid = Schema.Array(Row)
-export type Grid = typeof Grid.Type
-
-export const Position = Schema.Struct({ x: Schema.Number, y: Schema.Number })
-
-const SavedCell = Schema.Option(PaletteIndex)
-const SavedRow = Schema.Array(SavedCell)
-const SavedGrid = Schema.Array(SavedRow)
-
-export const SavedCanvas = Schema.Struct({
-  grid: SavedGrid,
-  gridSize: Schema.Number,
-  paletteThemeIndex: Schema.Number,
-  selectedColorIndex: PaletteIndex,
+export const SourceState = defineTaggedUnion({
+  NoSource: {},
+  Loading: {},
+  Ready: {
+    sourceId: Schema.String,
+    name: Schema.String,
+    image: RasterImage,
+  },
+  Failed: { reason: Schema.String },
 })
-export type SavedCanvas = typeof SavedCanvas.Type
+export type SourceState = typeof SourceState.Type
 
-export const SavedCanvasJsonString = Schema.fromJsonString(
-  Schema.toCodecJson(SavedCanvas),
-)
+export const PaletteModeChoice = Schema.Literals(['from-image', 'custom'])
+export type PaletteModeChoice = typeof PaletteModeChoice.Type
 
-// MODEL
+export const PreviewMode = Schema.Literals(['source', 'pattern'])
+export type PreviewMode = typeof PreviewMode.Type
+
+export const PreviewStatus = defineTaggedUnion({
+  AwaitingSource: {},
+  Processing: { runId: Schema.Int },
+  Failed: { reason: Schema.String },
+  Ready: {
+    runId: Schema.Int,
+    pattern: Pattern,
+    stitches: Schema.Uint8Array,
+  },
+})
+export type PreviewStatus = typeof PreviewStatus.Type
+
+export const PdfStatus = defineTaggedUnion({
+  Idle: {},
+  Working: {},
+  Failed: { reason: Schema.String },
+})
+export type PdfStatus = typeof PdfStatus.Type
+
+export const StitchSelection = Schema.Struct({
+  x: Schema.Int,
+  y: Schema.Int,
+  symbol: Schema.String,
+  flossNumber: Schema.String,
+  flossName: Schema.String,
+  hex: Schema.String,
+})
+export type StitchSelection = typeof StitchSelection.Type
 
 export const Model = Schema.Struct({
-  grid: Grid,
-  undoStack: Schema.Array(Grid),
-  redoStack: Schema.Array(Grid),
-  selectedColorIndex: PaletteIndex,
-  gridSize: Schema.Number,
-  tool: Tool,
-  mirrorMode: MirrorMode,
-  isDrawing: Schema.Boolean,
-  maybeHoveredCell: Schema.Option(Position),
-  errorDialog: Dialog.Model,
-  maybeExportError: Schema.Option(Schema.String),
-  paletteThemeIndex: Schema.Number,
-  gridSizeConfirmDialog: Dialog.Model,
-  maybePendingGridSize: Schema.Option(Schema.Number),
-  themeListbox: Listbox.Model,
-  toolRadioGroup: RadioGroup.Model,
-  gridSizeRadioGroup: RadioGroup.Model,
-  paletteRadioGroup: RadioGroup.Model,
+  source: SourceState,
+  title: Schema.String,
+  paletteMode: PaletteModeChoice,
+  colourCount: Schema.Int,
+  maybeCustomPalette: Schema.Option(PaletteSchema),
+  dithering: DitherAlgorithm,
+  targetSide: TargetSide,
+  targetStitches: Schema.Int,
+  fabricCount: Schema.Int,
+  previewMode: PreviewMode,
+  preview: PreviewStatus,
+  maybePipelineError: Schema.Option(Schema.String),
+  pdf: PdfStatus,
+  isPreviewMounted: Schema.Boolean,
+  runId: Schema.Int,
+  customColourDraft: Schema.String,
+  maybeStitchSelection: Schema.Option(StitchSelection),
 })
 export type Model = typeof Model.Type
 
-export const paletteIndexFromValue = (
-  value: string,
-  fallback: PaletteIndex,
-): PaletteIndex =>
-  Option.getOrElse(
-    Schema.decodeUnknownOption(PaletteIndex)(Number(value)),
-    () => fallback,
+export const projectFrom = (model: Model): Option.Option<Project> =>
+  SourceState.match(model.source, {
+    NoSource: () => Option.none(),
+    Loading: () => Option.none(),
+    Failed: () => Option.none(),
+    Ready: ({ sourceId, image }) =>
+      Option.map(maybePaletteSpec(model), palette => ({
+        sourceId,
+        source: image,
+        palette,
+        transformations: [
+          Transformation.PaletteConversion(),
+          Transformation.Dither({ algorithm: model.dithering }),
+          Transformation.Pattern({
+            targetSide: model.targetSide,
+            targetStitches: model.targetStitches,
+            fabricCount: model.fabricCount,
+          }),
+        ],
+      })),
+  })
+
+const maybePaletteSpec = (model: Model): Option.Option<Project['palette']> => {
+  if (model.paletteMode === 'from-image') {
+    return Option.some(
+      PaletteSpec.Extracted({ colourCount: model.colourCount }),
+    )
+  }
+  return Option.map(model.maybeCustomPalette, palette =>
+    PaletteSpec.Custom({ palette }),
   )
+}

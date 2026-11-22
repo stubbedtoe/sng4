@@ -1,36 +1,52 @@
 import { Schema } from 'effect'
 import { defineMessageUnion } from 'foldkit/message'
 
-import { Dialog, Listbox, RadioGroup } from '@foldkit/ui'
-
-import { PaletteIndex, Tool } from './model'
+import { Pattern, RasterImage, TargetSide } from './converter/model'
+import { DitherAlgorithm } from './domain/Transformation'
 
 export const Message = defineMessageUnion({
-  PressedCell: { x: Schema.Number, y: Schema.Number },
-  EnteredCell: { x: Schema.Number, y: Schema.Number },
-  LeftCanvas: {},
-  ReleasedMouse: {},
-  SelectedColor: { colorIndex: PaletteIndex },
-  SelectedTool: { tool: Tool },
-  SelectedGridSize: { size: Schema.Number },
-  ToggledMirrorHorizontal: {},
-  ToggledMirrorVertical: {},
-  ClickedUndo: {},
-  ClickedRedo: {},
-  ClickedHistoryStep: { stepIndex: Schema.Number },
-  ClickedRedoStep: { stepIndex: Schema.Number },
-  ClickedClear: {},
-  ClickedExport: {},
-  SucceededExportPng: {},
-  FailedExportPng: { error: Schema.String },
-  GotErrorDialogMessage: { message: Dialog.Message },
-  GotThemeListboxMessage: { message: Listbox.Message },
-  GotToolRadioGroupMessage: { message: RadioGroup.Message },
-  GotGridSizeRadioGroupMessage: { message: RadioGroup.Message },
-  GotPaletteRadioGroupMessage: { message: RadioGroup.Message },
-  ConfirmedGridSizeChange: {},
-  GotGridSizeConfirmDialogMessage: { message: Dialog.Message },
-  CompletedSaveCanvas: {},
-})
+  SelectedLocalImage: { files: Schema.Array(Schema.File) },
 
+  CompletedLoadImage: {
+    sourceId: Schema.String,
+    name: Schema.String,
+    image: RasterImage,
+  },
+  FailedLoadImage: { reason: Schema.String },
+
+  ChangedPaletteMode: { mode: Schema.Literals(['from-image', 'custom']) },
+  ChangedColourCount: { value: Schema.Int },
+  AddedCustomColour: { hex: Schema.String },
+  RemovedCustomColour: { index: Schema.Int },
+  EditedCustomColour: { index: Schema.Int, hex: Schema.String },
+  MovedCustomColour: { index: Schema.Int, delta: Schema.Int },
+  UpdatedColourDraft: { value: Schema.String },
+
+  ChangedDithering: { algorithm: DitherAlgorithm },
+  ChangedTargetSide: { side: TargetSide },
+  ChangedTargetStitches: { value: Schema.Int },
+  ChangedFabricCount: { value: Schema.Int },
+  UpdatedTitle: { value: Schema.String },
+
+  ClickedGenerate: {},
+  CompletedRunPipeline: {
+    runId: Schema.Int,
+    pattern: Pattern,
+    stitches: Schema.Uint8Array,
+  },
+  FailedRunPipeline: { runId: Schema.Int, reason: Schema.String },
+
+  ClickedPreviewMode: { mode: Schema.Literals(['source', 'pattern']) },
+  SucceededMountPreview: {},
+  FailedMountPreview: { reason: Schema.String },
+  ClickedFitPreview: {},
+  ClickedStitch: { x: Schema.Int, y: Schema.Int },
+
+  ClickedExportPdf: {},
+  CompletedExportPdf: {},
+  FailedExportPdf: { reason: Schema.String },
+
+  CompletedFitPreview: {},
+  CompletedSyncPreview: {},
+})
 export type Message = typeof Message.Type

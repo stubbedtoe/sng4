@@ -16,7 +16,10 @@
     "@foldkit/ui": "0.170.0",
     "clsx": "^2.1.1",
     "effect": "4.1.0",
-    "foldkit": "0.170.0"
+    "foldkit": "0.170.0",
+    "pdf-lib": "^1.17.1",
+    "pixi-viewport": "^7.0.3",
+    "pixi.js": "^8.23.0"
   },
   "devDependencies": {
     "@effect/tsgo": "0.50.0",

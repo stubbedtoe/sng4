@@ -1,1 +1,9 @@
 @import 'tailwindcss';
+
+#atomsphere-preview-host {
+  touch-action: none;
+}
+
+#atomsphere-preview-host canvas {
+  display: block;
+}

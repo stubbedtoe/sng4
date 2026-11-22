@@ -1,0 +1,454 @@
+-- allium: 3
+-- cross-stitch-converter.allium
+
+-- Scope: Convert images into cross-stitch patterns (slice 1 of an incrementally delivered app)
+-- Includes:
+--   - Image conversion: upload an image, choose parameters, receive a pattern
+--   - Full-cross-only patterns; optional dithering; colours snapped to real floss
+--   - Both palette modes: derived from the image, or user-supplied fixed palette
+--   - Re-running with new parameters replaces the previous pattern
+--   - Floss catalogue: built-in, editable by the user
+--   - Pattern outputs: symbol grid, key, floss usage (stitch counts + skein estimates),
+--     stitch and finished dimensions, colour preview, suggested fabric
+--   - Interactive pattern viewer (zoom + stitch lookup) and PDF chart export
+-- Excludes (candidate later slices):
+--   - Accounts, saved project library, sharing
+--   - Backstitch, half-stitch, french knots, blends, other stitch types
+--   - Stitch progress tracking
+--   - Multi-user isolation: the workspace is per-session, slice 1 is single-user
+
+------------------------------------------------------------
+-- Given
+------------------------------------------------------------
+
+given {
+    catalogue: FlossCatalogue
+    workspace: ConverterWorkspace
+}
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity RasterImage {
+    width: Integer
+    height: Integer
+    has_transparency: Boolean
+    format: String      -- declared by the source, e.g. "JPEG", "PNG", "WebP", "TIFF"; unsupported formats are rejected at conversion
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+value Colour {
+    red: Integer
+    green: Integer
+    blue: Integer
+}
+
+value ConversionParameters {
+    target_side: TargetSide
+    target_stitches: Integer        -- stitch count on the targeted side; the other side follows the image aspect ratio
+    colour_count: Integer           -- used when palette_mode = derived
+    dithering: Boolean
+    palette_mode: PaletteMode
+    palette: Palette?               -- required when palette_mode = supplied
+    fabric_count: Integer           -- aida count used for finished dimensions; defaults to config.default_fabric_count
+}
+
+value Palette {
+    source: PaletteMode
+    entries: Set<Floss>
+    colours: entries.count
+}
+
+value StitchDimensions {
+    width: Integer      -- stitches
+    height: Integer
+}
+
+value FinishedDimensions {
+    width_in: Decimal
+    height_in: Decimal
+    width_cm: Decimal
+    height_cm: Decimal
+}
+
+value EstimateBasis {
+    fabric_count: Integer
+    strands: Integer
+    skein_length_m: Decimal
+}
+
+value FabricSuggestion {
+    -- The suggested fabric is always aida at the chosen fabric count (slice 1).
+    count: Integer
+    cut_width_cm: Decimal
+    cut_height_cm: Decimal
+}
+
+value PatternCell {
+    x: Integer
+    y: Integer
+    symbol: String
+    floss: Floss
+}
+
+value KeyEntry {
+    symbol: String
+    floss: Floss
+}
+
+value FlossUsage {
+    floss: Floss
+    stitch_count: Integer       -- exact
+    skeins: Integer             -- estimated, rounded up to whole skeins
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum PaletteMode { derived | supplied }
+enum TargetSide { width | height }
+enum ConversionStatus { completed | rejected }
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+entity CrafterDevice {
+    -- The anonymous visitor using the app. No accounts in slice 1:
+    -- any device may convert images and edit the catalogue.
+    session_started_at: Timestamp
+}
+
+entity ConverterWorkspace {
+    -- One per session. Holds only the latest completed conversion;
+    -- a rejected request never displaces it.
+    current: Conversion?
+}
+
+entity FlossCatalogue {
+    -- Built-in seed data plus user-added entries.
+    entries: Floss with catalogue = this
+}
+
+entity Floss {
+    brand: String           -- e.g. "DMC", "Anchor"
+    number: String          -- e.g. "310"; String because catalogue numbers can be alphanumeric
+    name: String
+    colour: Colour
+    catalogue: FlossCatalogue
+}
+
+entity Conversion {
+    status: ConversionStatus
+    parameters: ConversionParameters
+    rejection_reason: String?
+    source: RasterImage
+    created_at: Timestamp
+    pattern: Pattern with conversion = this
+}
+
+entity Pattern {
+    conversion: Conversion
+    palette: Palette
+    stitch_dimensions: StitchDimensions
+    finished_dimensions: FinishedDimensions
+    estimate_basis: EstimateBasis       -- printed with the pattern so the skein estimates are interpretable
+    suggested_fabric: FabricSuggestion
+    preview: RasterImage                -- colour rendering of the stitched result
+    cells: List<PatternCell>            -- one cell per stitch position; every position has a stitch
+    key: List<KeyEntry>                 -- symbol -> floss
+    usage: List<FlossUsage>             -- per floss: exact stitch count + estimated skeins
+    total_stitches: cells.count
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    -- Fixed product decisions (not user-configurable in slice 1); values are proposed defaults
+    default_fabric_count: Integer = 14
+    default_dithering: Boolean = true
+    default_background: Colour = { red: 255, green: 255, blue: 255 }
+    skein_length_m: Decimal = 8.0
+    strands_per_stitch: Integer = 2
+    fabric_margin_cm: Decimal = 7.62            -- margin added around the design in the suggested fabric cut
+    max_pattern_side: Integer = 500             -- stitches
+    max_source_side: Integer = 8000             -- pixels
+    min_colours: Integer = 1
+    max_colours: Integer = 60
+    accepted_image_formats: Set<String> = { "JPEG", "PNG", "WebP" }
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+rule RejectConversion {
+    when: ConvertImage(image, parameters)
+    let dimensions = fit_dimensions(image, parameters.target_side, parameters.target_stitches)
+    let requested_colours =
+        if parameters.palette_mode = derived: parameters.colour_count
+        else: parameters.palette.colours
+    requires: parameters.target_stitches < 1
+        or dimensions.width < 1 or dimensions.height < 1
+        or dimensions.width > config.max_pattern_side
+        or dimensions.height > config.max_pattern_side
+        or image.width > config.max_source_side
+        or image.height > config.max_source_side
+        or image.format not in config.accepted_image_formats
+        or requested_colours < config.min_colours
+        or requested_colours > config.max_colours
+    ensures:
+        Conversion.created(
+            status: rejected,
+            parameters: parameters,
+            rejection_reason: "exceeds product limits or unsupported image format",
+            source: image,
+            created_at: now
+        )
+    @guidance
+        -- The rejection is disclosed to the crafter as the outcome of the
+        -- ConvertImage action, naming the violated limit or the unsupported
+        -- format; exact wording is presentation detail. A rejected request
+        -- never displaces the current pattern: workspace.current keeps
+        -- pointing at the last completed conversion.
+}
+
+rule ConvertImage {
+    when: ConvertImage(image, parameters)
+    requires: parameters.palette_mode = derived or parameters.palette != null
+    let dimensions = fit_dimensions(image, parameters.target_side, parameters.target_stitches)
+    let requested_colours =
+        if parameters.palette_mode = derived: parameters.colour_count
+        else: parameters.palette.colours
+    requires: parameters.target_stitches >= 1
+    requires: dimensions.width >= 1 and dimensions.height >= 1
+    requires: dimensions.width <= config.max_pattern_side and dimensions.height <= config.max_pattern_side
+    requires: image.width <= config.max_source_side and image.height <= config.max_source_side
+    requires: image.format in config.accepted_image_formats
+    requires: requested_colours >= config.min_colours and requested_colours <= config.max_colours
+    ensures:
+        let palette = resolve_palette(parameters, image, catalogue)
+        let cells = render_cells(image, dimensions, palette, dithering: parameters.dithering, background: config.default_background)
+        let key = assign_symbols(palette)
+        let conversion = Conversion.created(
+            status: completed,
+            parameters: parameters,
+            rejection_reason: null,
+            source: image,
+            created_at: now
+        )
+        workspace.current = conversion
+        let pattern = Pattern.created(
+            conversion: conversion,
+            palette: palette,
+            stitch_dimensions: dimensions,
+            finished_dimensions: compute_finished_dimensions(dimensions, parameters.fabric_count),
+            estimate_basis: { fabric_count: parameters.fabric_count, strands: config.strands_per_stitch, skein_length_m: config.skein_length_m },
+            suggested_fabric: suggest_fabric(dimensions, parameters.fabric_count),
+            cells: cells,
+            key: key,
+            usage: estimate_usage(cells, fabric_count: parameters.fabric_count, strands: config.strands_per_stitch, skein_length_m: config.skein_length_m),
+            preview: render_preview(cells, key)
+        )
+        for previous in Conversions where previous != conversion:
+            not exists previous.pattern
+    @guidance
+        -- Pipeline: the image is composited onto the background colour
+        -- (transparency removed), scaled to the stitch dimensions keeping
+        -- the aspect ratio, dithered if enabled, and every resulting colour
+        -- is snapped to its nearest floss in the palette. With a derived
+        -- palette, the palette is chosen from the catalogue to best
+        -- represent the image at the requested colour count; with a
+        -- supplied palette, every colour is snapped to the nearest entry in
+        -- that palette (nearest-colour snap on palette shortfall).
+        -- When the crafter does not express a preference, the caller
+        -- pre-fills dithering = config.default_dithering and
+        -- fabric_count = config.default_fabric_count.
+        -- fit_dimensions rounds each side to the nearest whole stitch,
+        -- with a minimum of 1 stitch per side.
+        -- Re-running replaces the previous pattern: only the current
+        -- conversion's pattern remains.
+}
+
+rule AddFloss {
+    when: AddFloss(brand, number, name, colour)
+    requires: not exists Floss{brand, number}
+    ensures: Floss.created(brand: brand, number: number, name: name, colour: colour, catalogue: catalogue)
+}
+
+rule EditFloss {
+    when: EditFloss(floss, name, colour)
+    requires: floss in catalogue.entries
+    ensures:
+        floss.name = name
+        floss.colour = colour
+    @guidance
+        -- Brand and number together are the identity of a catalogue entry
+        -- and are immutable.
+}
+
+rule RemoveFloss {
+    when: RemoveFloss(floss)
+    requires: floss in catalogue.entries
+    ensures: not exists floss
+    @guidance
+        -- Removal affects future conversions only; no patterns are kept
+        -- after a re-run, so no existing pattern can reference the floss.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+invariant FlossNumbersUnique {
+    for a in Flosses:
+        for b in Flosses:
+            a != b implies a.brand != b.brand or a.number != b.number
+}
+
+invariant GridMatchesDimensions {
+    for pattern in Patterns:
+        pattern.cells.count = pattern.stitch_dimensions.width * pattern.stitch_dimensions.height
+}
+
+invariant UsageMatchesGrid {
+    for pattern in Patterns:
+        total_stitch_count(pattern.usage) = pattern.cells.count
+}
+
+invariant KeySymbolsUnique {
+    for pattern in Patterns:
+        for a in pattern.key:
+            for b in pattern.key:
+                a.symbol = b.symbol implies a.floss = b.floss
+}
+
+invariant EveryCellSymbolResolves {
+    for pattern in Patterns:
+        for cell in pattern.cells:
+            pattern.key.any(e => e.symbol = cell.symbol and e.floss = cell.floss)
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface Converter {
+    facing visitor: CrafterDevice
+
+    let current = workspace.current
+
+    exposes:
+        current?.status
+        current?.pattern.stitch_dimensions when current?.status = completed
+        current?.pattern.finished_dimensions when current?.status = completed
+        current?.pattern.total_stitches when current?.status = completed
+        current?.pattern.palette.colours when current?.status = completed
+        current?.pattern.preview when current?.status = completed
+
+    provides:
+        ConvertImage(visitor, image, parameters)
+        ExportPatternPdf(visitor)
+            when current?.status = completed
+
+    related:
+        PatternViewer(workspace.current.pattern)
+            when workspace.current?.status = completed
+
+    @guidance
+        -- Optional exposures resolve to nothing (rather than erroring) until
+        -- the first conversion completes; the crafter starts from an empty
+        -- workspace. ConvertImage discloses its outcome — a completed
+        -- pattern or a recorded rejection reason — to the crafter; a
+        -- rejected request leaves the current pattern in place.
+        -- ExportPatternPdf renders the current pattern as a printable chart
+        -- document (grid, key, usage, dimensions, preview); page layout is
+        -- specified separately (see: PdfChartLayout).
+}
+
+surface PatternViewer {
+    facing visitor: CrafterDevice
+
+    context pattern: Pattern where pattern.conversion = workspace.current
+
+    exposes:
+        pattern.stitch_dimensions
+        pattern.finished_dimensions
+        pattern.estimate_basis
+        pattern.suggested_fabric
+        pattern.total_stitches
+        for cell in pattern.cells:
+            cell.x
+            cell.y
+            cell.symbol
+            cell.floss.number
+        for entry in pattern.key:
+            entry.symbol
+            entry.floss.number
+            entry.floss.name
+        for usage in pattern.usage:
+            usage.floss.number
+            usage.floss.name
+            usage.stitch_count
+            usage.skeins
+
+    provides:
+        LookUpStitch(visitor, x, y)
+            when x >= 1 and x <= pattern.stitch_dimensions.width and y >= 1 and y <= pattern.stitch_dimensions.height
+
+    @guarantee StitchLookupResult
+        -- LookUpStitch(x, y) returns the symbol, floss number, and floss
+        -- name of the stitch at that position.
+    @guidance
+        -- Grid coordinates are 1-based with the origin at the top-left.
+        -- Charts number every 10th row and column, matching printed chart
+        -- conventions. The viewer supports zooming; pan/zoom mechanics are
+        -- presentation detail outside this contract.
+}
+
+surface FlossCatalogueAdmin {
+    facing visitor: CrafterDevice
+
+    exposes:
+        for floss in catalogue.entries:
+            floss.brand
+            floss.number
+            floss.name
+            floss.colour
+
+    provides:
+        AddFloss(visitor, brand, number, name, colour)
+            when not exists Floss{brand, number}
+        EditFloss(visitor, floss, name, colour)
+        RemoveFloss(visitor, floss)
+
+    @guidance
+        -- The catalogue ships with built-in entries and is editable by any
+        -- visitor (no accounts in slice 1). Duplicate numbers are rejected
+        -- before the action is offered.
+}
+
+------------------------------------------------------------
+-- Deferred Specifications
+------------------------------------------------------------
+
+deferred PdfChartLayout.render    -- see: detailed/pdf-chart-layout.allium
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Which brands ship in the built-in catalogue seed — DMC and Anchor proposed; user-added entries carry whichever brand the user enters"
+
+open question "Derived palette source: should a derived palette be selected from a fixed thread catalogue (the current ConvertImage rule text), extracted from the image pixels as the prototype does, or offered as separate modes? The prototype extracts a representative palette by colour quantisation because real catalogues are deferred; the catalogue path remains the seam for DMC and Anchor."
+
+open question "Conversion history: should rejected and superseded conversions be recorded and disclosed to the crafter (the Conversion entity records them today), or is the latest completed pattern enough? The prototype keeps only the latest completed result, matching the workspace shape, until persistence arrives."
+
+open question "Catalogue administration: should crafters edit brand and number identities through a catalogue admin surface, or only generic custom colours? The prototype exposes generic colour editing only; the catalogue operations exist in the domain but have no surface."

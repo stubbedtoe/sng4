@@ -1,0 +1,83 @@
+flowchart TB
+    User["User"]
+    subgraph UI["Application UI — Foldkit"]
+        Views["Responsive UI
+        workflow · parameters · toolbar"]
+        State["Foldkit State
+        current project · selected step
+        viewport · UI state"]
+    end
+    subgraph Effect["Effect.ts — Domain & Services"]
+        Update["Commands / Effects"]
+        Doc["Canonical Project Model
+        source image
+        ordered transformations
+        metadata
+        plugin versions"]
+       
+        Plugins["Plugin Registry
+        category
+        inputs / outputs
+        parameter schema
+        implementation"]
+       
+        Render["Render Service"]
+        Storage["Persistence Service"]
+        Publish["ATProto Service"]
+    end
+    subgraph Graphics["Graphics subsystem"]
+        Viewport["pixi-viewport
+        pan · pinch zoom
+        wheel zoom · inertia
+        bounds"]
+        Pixi["PixiJS v8"]
+       
+        Pipeline["Transformation Pipeline"]
+        CPU["Canvas 2D / Workers
+        crop · resize
+        CPU transforms"]
+        GPU["WebGL / WebGPU
+        colour adjustment
+        custom shaders
+        intensive transforms"]
+        Cache["Intermediate Cache
+        keyed by input + transform +
+        parameters + algorithm version"]
+        Canvas["HTML Canvas"]
+    end
+    subgraph Local["Local-first storage"]
+        ProjectDB["Project State"]
+        Assets["Source Images / Assets"]
+        RenderCache["Optional Render Cache"]
+    end
+    subgraph Federation["ATProto / Atmosphere"]
+        Repo["User PDS"]
+        Blob["Image / Pattern Blobs"]
+        Records["Atomsphere Records"]
+    end
+    User --> Views
+    Views <--> State
+    State --> Update
+    Update <--> Doc
+    Doc <--> Plugins
+    Doc -->|"ordered transformations"| Render
+    Plugins -->|"implementation + parameters"| Render
+    Render --> Pipeline
+    Pipeline --> CPU
+    Pipeline --> GPU
+    CPU --> Cache
+    GPU --> Cache
+    Cache --> Pixi
+    State -->|"viewport intent"| Viewport
+    Viewport --> Pixi
+    Pixi --> Canvas
+    Viewport -->|"pan / zoom events"| State
+    Doc --> Storage
+    Storage <--> ProjectDB
+    Storage <--> Assets
+    Cache -.-> RenderCache
+    Doc --> Publish
+    Assets --> Publish
+    Publish --> Repo
+    Publish --> Blob
+    Publish --> Records

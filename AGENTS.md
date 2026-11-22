@@ -10,4 +10,9 @@ subtree_prompted: false
 
 ## Project Notes
 
-Domain vocabulary, deployment steps, local conventions that differ from Foldkit's defaults: write them here.
+This app is **Atomsphere**, a local-first image-to-cross-stitch converter. Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the full picture; the notes below are the day-to-day essentials.
+
+- `src/converter/` is the executable form of `specs/cross-stitch-converter.allium`. The five `*.test.ts` files there are spec-derived (85 tests); treat them as the domain contract. They run against Effect 4 (`Result`, not the removed `Either`).
+- The pixel pipeline (decode -> composite -> resize -> quantise -> map/dither -> pattern) lives in `src/transforms/` and `src/services/Pipeline.ts`. Stage results are cached by keys that include the input, parameters, and registry version; cache-hit behaviour (identical object identity) is tested, so keep keys complete when adding stages.
+- PixiJS and pixi-viewport are render-only. The Model never holds DOM nodes, Pixi objects, or decoded pixels (those live in the `PixelStore` service). `freezeModel: false` in `src/entry.ts` is deliberate because the Model carries megabyte-scale `Uint8Array` grids.
+- Domain vocabulary: a stitch grid is a `Pattern` (1-based `cells`, symbol `key`, `usage`); palette entries are `Floss` values; image-derived palettes use brand `Custom` until a real DMC/Anchor catalogue ships.
