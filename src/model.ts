@@ -2,9 +2,15 @@ import { Option, Schema } from 'effect'
 import { defineTaggedUnion } from 'foldkit/schema'
 
 import {
+  EstimateBasis,
+  FabricSuggestion,
+  FinishedDimensions,
+  FlossUsage,
+  KeyEntry,
   Palette as PaletteSchema,
   Pattern,
   RasterImage,
+  StitchDimensions,
   TargetSide,
 } from './converter/model'
 import {
@@ -32,13 +38,38 @@ export type PaletteModeChoice = typeof PaletteModeChoice.Type
 export const PreviewMode = Schema.Literals(['source', 'pattern'])
 export type PreviewMode = typeof PreviewMode.Type
 
+// Everything the UI needs from a completed pattern except the per-stitch
+// data. `cells` and `preview.maybePixels` stay in the pipeline cache (the
+// full Pattern) and are derived on demand; the Model only retains one byte
+// per stitch plus palette-sized metadata.
+export const PatternSummary = Schema.Struct({
+  stitchDimensions: StitchDimensions,
+  finishedDimensions: FinishedDimensions,
+  estimateBasis: EstimateBasis,
+  suggestedFabric: FabricSuggestion,
+  key: Schema.Array(KeyEntry),
+  usage: Schema.Array(FlossUsage),
+  palette: PaletteSchema,
+})
+export type PatternSummary = typeof PatternSummary.Type
+
+export const summaryFromPattern = (pattern: Pattern): PatternSummary => ({
+  stitchDimensions: pattern.stitchDimensions,
+  finishedDimensions: pattern.finishedDimensions,
+  estimateBasis: pattern.estimateBasis,
+  suggestedFabric: pattern.suggestedFabric,
+  key: pattern.key,
+  usage: pattern.usage,
+  palette: pattern.palette,
+})
+
 export const PreviewStatus = defineTaggedUnion({
   AwaitingSource: {},
   Processing: { runId: Schema.Int },
   Failed: { reason: Schema.String },
   Ready: {
     runId: Schema.Int,
-    pattern: Pattern,
+    summary: PatternSummary,
     stitches: Schema.Uint8Array,
   },
 })
@@ -76,6 +107,7 @@ export const Model = Schema.Struct({
   maybePipelineError: Schema.Option(Schema.String),
   pdf: PdfStatus,
   isPreviewMounted: Schema.Boolean,
+  previewZoom: Schema.Int,
   runId: Schema.Int,
   customColourDraft: Schema.String,
   maybeStitchSelection: Schema.Option(StitchSelection),

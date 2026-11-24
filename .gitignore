@@ -26,3 +26,9 @@ Thumbs.db
 
 # Claude Code worktrees
 .claude/worktrees/
+
+# vendored repos
+repos/*
+
+# alchemy
+.alchemy/

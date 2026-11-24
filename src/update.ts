@@ -9,12 +9,12 @@ import {
   LoadImageFile,
   RunPipeline,
   SyncPreview,
+  ZoomPreview,
 } from './command'
 import { PREVIEW_HOST_ID } from './constant'
 import { CONVERTER_CONFIG } from './converter/config'
-import { type Colour, CrafterDevice } from './converter/model'
+import { type Colour } from './converter/model'
 import type { Palette } from './converter/model'
-import { lookUpStitch } from './converter/surfaces'
 import { colourToHex } from './domain/Colour'
 import { Message } from './message'
 import {
@@ -43,10 +43,6 @@ type AppResources =
 
 type UpdateReturn = Update.Return<Model, Message, AppResources>
 
-const previewDevice: CrafterDevice = CrafterDevice.make({
-  sessionStartedAt: new Date(0),
-})
-
 const clamp = (value: number, minimum: number, maximum: number): number =>
   Math.min(maximum, Math.max(minimum, value))
 
@@ -73,12 +69,12 @@ const syncPreview = (model: Model) => {
     AwaitingSource: () => Option.none(),
     Processing: () => Option.none(),
     Failed: () => Option.none(),
-    Ready: ({ pattern, stitches }) =>
+    Ready: ({ summary, stitches }) =>
       Option.some({
         stitches,
-        width: pattern.stitchDimensions.width,
-        height: pattern.stitchDimensions.height,
-        palette: pattern.palette,
+        width: summary.stitchDimensions.width,
+        height: summary.stitchDimensions.height,
+        palette: summary.palette,
       }),
   })
   const maybeSourceId = SourceState.match(model.source, {
@@ -91,7 +87,10 @@ const syncPreview = (model: Model) => {
     hostId: PREVIEW_HOST_ID,
     mode: model.previewMode,
     maybeSourceId,
-    maybePattern,
+    maybePattern: Option.map(maybePattern, data => ({
+      ...data,
+      contentId: Option.getOrElse(maybeSourceId, () => ''),
+    })),
   })
 }
 
@@ -252,12 +251,12 @@ export const update = (model: Model, message: Message): UpdateReturn =>
 
     ClickedGenerate: () => requestRerun(model, model),
 
-    CompletedRunPipeline: ({ runId, pattern, stitches }) => {
+    CompletedRunPipeline: ({ runId, summary, stitches }) => {
       if (runId !== model.runId) {
         return { model }
       }
       const nextModel = modifyFields(model, {
-        preview: () => PreviewStatus.Ready({ runId, pattern, stitches }),
+        preview: () => PreviewStatus.Ready({ runId, summary, stitches }),
         maybePipelineError: () => Option.none(),
       })
       return { model: nextModel, commands: [syncPreview(nextModel)] }
@@ -304,36 +303,54 @@ export const update = (model: Model, message: Message): UpdateReturn =>
       commands: [FitPreview({ hostId: PREVIEW_HOST_ID })],
     }),
 
+    ClickedZoomIn: () => ({
+      model,
+      commands: [ZoomPreview({ hostId: PREVIEW_HOST_ID, factor: 1.25 })],
+    }),
+
+    ClickedZoomOut: () => ({
+      model,
+      commands: [ZoomPreview({ hostId: PREVIEW_HOST_ID, factor: 0.8 })],
+    }),
+
+    CompletedZoomPreview: () => ({ model }),
+
+    ChangedPreviewZoom: ({ percent }) => ({
+      model: modifyFields(model, { previewZoom: () => percent }),
+    }),
+
     ClickedStitch: ({ x, y }) =>
       PreviewStatus.match(model.preview, {
         AwaitingSource: () => ({ model }),
         Processing: () => ({ model }),
         Failed: () => ({ model }),
-        Ready: ({ pattern }) =>
-          Option.match(lookUpStitch(previewDevice, pattern, x, y), {
-            onNone: () => ({ model }),
-            onSome: lookup => {
-              const keyEntry = pattern.key.find(
-                entry => entry.symbol === lookup.symbol,
-              )
-              if (keyEntry === undefined) {
-                return { model }
-              }
-              return {
-                model: modifyFields(model, {
-                  maybeStitchSelection: () =>
-                    Option.some({
-                      x,
-                      y,
-                      symbol: lookup.symbol,
-                      flossNumber: keyEntry.floss.number,
-                      flossName: keyEntry.floss.name,
-                      hex: colourToHex(keyEntry.floss.colour),
-                    }),
+        Ready: ({ summary, stitches }) => {
+          const { width, height } = summary.stitchDimensions
+          if (x < 1 || x > width || y < 1 || y > height) {
+            return { model }
+          }
+          const colourIndex = stitches[(y - 1) * width + (x - 1)]
+          if (colourIndex === undefined) {
+            return { model }
+          }
+          const keyEntry = summary.key[colourIndex]
+          if (keyEntry === undefined) {
+            return { model }
+          }
+          return {
+            model: modifyFields(model, {
+              maybeStitchSelection: () =>
+                Option.some({
+                  x,
+                  y,
+                  symbol: keyEntry.symbol,
+                  flossNumber: keyEntry.floss.number,
+                  flossName: keyEntry.floss.name,
+                  hex: colourToHex(keyEntry.floss.colour),
                 }),
-              }
-            },
-          }),
+            }),
+          }
+        },
       }),
 
     ClickedExportPdf: () =>
@@ -341,10 +358,14 @@ export const update = (model: Model, message: Message): UpdateReturn =>
         AwaitingSource: () => ({ model }),
         Processing: () => ({ model }),
         Failed: () => ({ model }),
-        Ready: ({ pattern }) => ({
-          model: modifyFields(model, { pdf: () => PdfStatus.Working() }),
-          commands: [ExportPatternPdf({ title: model.title, pattern })],
-        }),
+        Ready: () =>
+          Option.match(projectFrom(model), {
+            onNone: () => ({ model }),
+            onSome: project => ({
+              model: modifyFields(model, { pdf: () => PdfStatus.Working() }),
+              commands: [ExportPatternPdf({ title: model.title, project })],
+            }),
+          }),
       }),
 
     CompletedExportPdf: () => ({

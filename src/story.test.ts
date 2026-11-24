@@ -2,11 +2,15 @@ import { Array, Option } from 'effect'
 import { Command, given, message, model, story } from 'foldkit/story'
 import { describe, expect, test } from 'vitest'
 
-import { ExportPatternPdf, RunPipeline, SyncPreview } from './command'
-import type { Pattern } from './converter/model'
+import {
+  ExportPatternPdf,
+  RunPipeline,
+  SyncPreview,
+  ZoomPreview,
+} from './command'
 import { init } from './main'
 import { Message } from './message'
-import type { Model } from './model'
+import type { Model, PatternSummary } from './model'
 import { SourceState } from './model'
 import { update } from './update'
 
@@ -24,7 +28,9 @@ const loadedSource = SourceState.Ready({
   },
 })
 
-const readyPattern = (overrides: Partial<Pattern> = {}): Pattern => ({
+const readySummary = (
+  overrides: Partial<PatternSummary> = {},
+): PatternSummary => ({
   stitchDimensions: { width: 2, height: 2 },
   finishedDimensions: {
     widthIn: 2 / 14,
@@ -34,26 +40,6 @@ const readyPattern = (overrides: Partial<Pattern> = {}): Pattern => ({
   },
   estimateBasis: { fabricCount: 14, strands: 2, skeinLengthM: 8 },
   suggestedFabric: { count: 14, cutWidthCm: 20, cutHeightCm: 20 },
-  preview: {
-    width: 2,
-    height: 2,
-    hasTransparency: false,
-    format: 'PNG',
-    maybePixels: Option.none(),
-  },
-  cells: [
-    {
-      x: 1,
-      y: 1,
-      symbol: 'A',
-      floss: {
-        brand: 'Custom',
-        number: 'C1',
-        name: 'Colour C1',
-        colour: { red: 0, green: 0, blue: 0 },
-      },
-    },
-  ],
   key: [
     {
       symbol: 'A',
@@ -134,7 +120,7 @@ describe('update', () => {
       message(
         Message.CompletedRunPipeline({
           runId: 1,
-          pattern: readyPattern(),
+          summary: readySummary(),
           stitches: new Uint8Array([0]),
         }),
       ),
@@ -151,7 +137,7 @@ describe('update', () => {
       message(
         Message.CompletedRunPipeline({
           runId: 2,
-          pattern: readyPattern(),
+          summary: readySummary(),
           stitches: new Uint8Array([0, 1, 1, 0]),
         }),
       ),
@@ -170,7 +156,7 @@ describe('update', () => {
       preview: {
         _tag: 'Ready',
         runId: 2,
-        pattern: readyPattern(),
+        summary: readySummary(),
         stitches: new Uint8Array([0, 1, 1, 0]),
       },
     }
@@ -199,7 +185,7 @@ describe('update', () => {
       preview: {
         _tag: 'Ready',
         runId: 2,
-        pattern: readyPattern(),
+        summary: readySummary(),
         stitches: new Uint8Array([0, 1, 1, 0]),
       },
     }
@@ -218,6 +204,33 @@ describe('update', () => {
       message(Message.ClickedExportPdf()),
       Command.expectHas(ExportPatternPdf),
       Command.resolve(ExportPatternPdf, Message.CompletedExportPdf()),
+    )
+  })
+
+  test('ClickedZoomIn requests a zoom and the reported zoom updates the model', () => {
+    story(
+      update,
+      given({ ...initialModel, source: loadedSource }),
+      message(Message.ClickedZoomIn()),
+      Command.expectHas(ZoomPreview),
+      Command.resolve(ZoomPreview, Message.CompletedZoomPreview()),
+      message(Message.ChangedPreviewZoom({ percent: 125 })),
+      model(nextModel => {
+        expect(nextModel.previewZoom).toBe(125)
+      }),
+    )
+  })
+
+  test('ClickedZoomOut requests a zoom out', () => {
+    story(
+      update,
+      given({ ...initialModel, source: loadedSource }),
+      message(Message.ClickedZoomOut()),
+      Command.expectHas(ZoomPreview),
+      Command.resolve(ZoomPreview, Message.CompletedZoomPreview()),
+      model(nextModel => {
+        expect(nextModel.previewZoom).toBe(100)
+      }),
     )
   })
 

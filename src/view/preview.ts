@@ -165,15 +165,48 @@ const previewOverlayView = (model: Model, h: HtmlBuilder<Message>): Html =>
               }),
             ],
           ),
-          h.button(
+          h.div(
+            [h.Class('flex items-center gap-2')],
             [
-              h.OnClick(Message.ClickedFitPreview()),
-              h.AriaLabel('Zoom to fit'),
-              h.Class(
-                'pointer-events-auto rounded-md bg-white/95 px-3 py-1.5 text-xs font-semibold text-slate-700 shadow hover:bg-white',
+              h.button(
+                [
+                  h.OnClick(Message.ClickedZoomOut()),
+                  h.AriaLabel('Zoom out'),
+                  h.Class(
+                    'pointer-events-auto rounded-md bg-white/95 px-3 py-1.5 text-xs font-semibold text-slate-700 shadow hover:bg-white',
+                  ),
+                ],
+                ['−'],
+              ),
+              h.span(
+                [
+                  h.Class(
+                    'pointer-events-auto rounded-md bg-white/95 px-2 py-1.5 text-xs font-semibold tabular-nums text-slate-700 shadow',
+                  ),
+                ],
+                [`${model.previewZoom}%`],
+              ),
+              h.button(
+                [
+                  h.OnClick(Message.ClickedZoomIn()),
+                  h.AriaLabel('Zoom in'),
+                  h.Class(
+                    'pointer-events-auto rounded-md bg-white/95 px-3 py-1.5 text-xs font-semibold text-slate-700 shadow hover:bg-white',
+                  ),
+                ],
+                ['+'],
+              ),
+              h.button(
+                [
+                  h.OnClick(Message.ClickedFitPreview()),
+                  h.AriaLabel('Zoom to fit'),
+                  h.Class(
+                    'pointer-events-auto rounded-md bg-white/95 px-3 py-1.5 text-xs font-semibold text-slate-700 shadow hover:bg-white',
+                  ),
+                ],
+                ['Fit'],
               ),
             ],
-            ['Fit'],
           ),
         ],
       ),
@@ -188,11 +221,16 @@ export const previewView = (model: Model, h: HtmlBuilder<Message>): Html =>
       ),
     ],
     [
+      // The canvas host stays mounted across source states: replacing it
+      // would destroy and recreate the whole Pixi/WebGL stack on every new
+      // image (and reset the zoom). The state views render as overlays on
+      // top of it.
+      canvasHostView(model, h),
       SourceState.match(model.source, {
         NoSource: () => noSourceView(h),
         Loading: () => loadingSourceView(h),
         Failed: ({ reason }) => failedSourceView(reason, h),
-        Ready: () => canvasHostView(model, h),
+        Ready: () => h.empty,
       }),
     ],
   )

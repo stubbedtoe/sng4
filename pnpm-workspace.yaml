@@ -1,2 +1,11 @@
 allowBuilds:
   msgpackr-extract: false
+  workerd: true
+permissions:
+  pixi.js:
+    skills: true
+skills:
+  dirs:
+    - .agent/skills
+    - .claude/skills
+    - .github/skills

@@ -1,8 +1,9 @@
 import { Schema } from 'effect'
 import { defineMessageUnion } from 'foldkit/message'
 
-import { Pattern, RasterImage, TargetSide } from './converter/model'
+import { RasterImage, TargetSide } from './converter/model'
 import { DitherAlgorithm } from './domain/Transformation'
+import { PatternSummary } from './model'
 
 export const Message = defineMessageUnion({
   SelectedLocalImage: { files: Schema.Array(Schema.File) },
@@ -31,7 +32,7 @@ export const Message = defineMessageUnion({
   ClickedGenerate: {},
   CompletedRunPipeline: {
     runId: Schema.Int,
-    pattern: Pattern,
+    summary: PatternSummary,
     stitches: Schema.Uint8Array,
   },
   FailedRunPipeline: { runId: Schema.Int, reason: Schema.String },
@@ -40,6 +41,10 @@ export const Message = defineMessageUnion({
   SucceededMountPreview: {},
   FailedMountPreview: { reason: Schema.String },
   ClickedFitPreview: {},
+  ClickedZoomIn: {},
+  ClickedZoomOut: {},
+  CompletedZoomPreview: {},
+  ChangedPreviewZoom: { percent: Schema.Int },
   ClickedStitch: { x: Schema.Int, y: Schema.Int },
 
   ClickedExportPdf: {},

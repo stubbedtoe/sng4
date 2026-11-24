@@ -23,6 +23,7 @@ export const init: Runtime.ApplicationInit<Model, Message> = () => ({
     maybePipelineError: Option.none(),
     pdf: PdfStatus.Idle(),
     isPreviewMounted: false,
+    previewZoom: 100,
     runId: 0,
     customColourDraft: '#b91c1c',
     maybeStitchSelection: Option.none(),

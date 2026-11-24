@@ -3,9 +3,10 @@ import { SecureRandom } from 'effect/crypto'
 import { Command } from 'foldkit'
 
 import { CONVERTER_CONFIG } from './converter/config'
-import { Palette, Pattern } from './converter/model'
+import { Palette } from './converter/model'
 import { Project } from './domain/Transformation'
 import { Message } from './message'
+import { summaryFromPattern } from './model'
 import { getPreviewHandle } from './rendering/pixi/registry'
 import {
   ImageDecodeFailure,
@@ -17,7 +18,6 @@ import { PdfService } from './services/PdfService'
 import type { PipelineError } from './services/Pipeline'
 import { Pipeline } from './services/Pipeline'
 import { PixelStore } from './services/PixelStore'
-import { symbolAt } from './transforms/symbols'
 
 type ImageLoadError =
   | UnsupportedImageFormat
@@ -95,7 +95,7 @@ export const RunPipeline = Command.define('RunPipeline', {
           const output = yield* pipeline.evaluate(project)
           return Message.CompletedRunPipeline({
             runId,
-            pattern: output.pattern,
+            summary: summaryFromPattern(output.pattern),
             stitches: output.stitches,
           })
         }),
@@ -116,6 +116,9 @@ const PreviewSyncData = Schema.Struct({
   width: Schema.Int,
   height: Schema.Int,
   palette: Palette,
+  // identity of the loaded source; shared with the source-image view so
+  // switching modes does not count as new content
+  contentId: Schema.String,
 })
 
 export const SyncPreview = Command.define('SyncPreview', {
@@ -137,15 +140,15 @@ export const SyncPreview = Command.define('SyncPreview', {
           onNone: () => Effect.void,
           onSome: data =>
             Effect.sync(() =>
-              handle.value.setPattern({
-                width: data.width,
-                height: data.height,
-                stitches: data.stitches,
-                colours: data.palette.entries.map(entry => entry.colour),
-                symbols: data.palette.entries.map((_, index) =>
-                  symbolAt(index),
-                ),
-              }),
+              handle.value.setPattern(
+                {
+                  width: data.width,
+                  height: data.height,
+                  stitches: data.stitches,
+                  colours: data.palette.entries.map(entry => entry.colour),
+                },
+                data.contentId,
+              ),
             ),
         })
       } else {
@@ -155,11 +158,24 @@ export const SyncPreview = Command.define('SyncPreview', {
           onSome: sourceId =>
             Effect.gen(function* () {
               const pixels = yield* pixelStore.get(sourceId)
-              yield* Effect.sync(() => handle.value.setSource(pixels))
+              yield* Effect.sync(() => handle.value.setSource(pixels, sourceId))
             }).pipe(Effect.catch(() => Effect.void)),
         })
       }
       return Message.CompletedSyncPreview()
+    }),
+})
+
+export const ZoomPreview = Command.define('ZoomPreview', {
+  args: { hostId: Schema.String, factor: Schema.Number },
+  messages: [Message.CompletedZoomPreview],
+  execute: ({ hostId, factor }) =>
+    Effect.gen(function* () {
+      const handle = getPreviewHandle(hostId)
+      if (Option.isSome(handle)) {
+        yield* Effect.sync(() => handle.value.zoomBy(factor))
+      }
+      return Message.CompletedZoomPreview()
     }),
 })
 
@@ -177,10 +193,15 @@ export const FitPreview = Command.define('FitPreview', {
 })
 
 export const ExportPatternPdf = Command.define('ExportPatternPdf', {
-  args: { title: Schema.String, pattern: Pattern },
+  args: { title: Schema.String, project: Project },
   messages: [Message.CompletedExportPdf, Message.FailedExportPdf],
-  execute: ({ title, pattern }) =>
+  execute: ({ title, project }) =>
     Effect.gen(function* () {
+      // The Model keeps only a PatternSummary, so the full Pattern (cells and
+      // preview pixels) is re-derived here. The project is unchanged since the
+      // run that produced it, so this is a guaranteed pipeline cache hit.
+      const pipeline = yield* Pipeline
+      const { pattern } = yield* pipeline.evaluate(project)
       const pdfService = yield* PdfService
       const bytes = yield* pdfService.generatePatternPdf(pattern, title)
       const blob = new Blob([new Uint8Array(bytes)], {
@@ -196,7 +217,14 @@ export const ExportPatternPdf = Command.define('ExportPatternPdf', {
       return Message.CompletedExportPdf()
     }).pipe(
       Effect.catch(error =>
-        Effect.succeed(Message.FailedExportPdf({ reason: error.reason })),
+        Effect.succeed(
+          Message.FailedExportPdf({
+            reason:
+              'reason' in error
+                ? error.reason
+                : 'The pattern could not be rebuilt for export.',
+          }),
+        ),
       ),
     ),
 })

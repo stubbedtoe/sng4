@@ -15,6 +15,7 @@ type MountMessage =
   | typeof Message.SucceededMountPreview.Type
   | typeof Message.FailedMountPreview.Type
   | typeof Message.ClickedStitch.Type
+  | typeof Message.ChangedPreviewZoom.Type
 
 const mountPreviewStream = (
   element: Element,
@@ -24,6 +25,14 @@ const mountPreviewStream = (
     Effect.gen(function* () {
       yield* Effect.acquireRelease(
         Effect.gen(function* () {
+          // Suspend before the heavy synchronous WebGL bootstrap.
+          // Foldkit acquires Mounts with a synchronous fork inside its
+          // patch phase, so creating the Pixi Application here would
+          // bill context creation and shader compilation to the patch
+          // that inserted the canvas (slow-patch warnings on whatever
+          // Message happened to mount the preview). Yielding once lets
+          // that patch finish first; the canvas pops in a tick later.
+          yield* Effect.yieldNow
           const app = new Application()
           yield* Effect.tryPromise({
             try: () =>
@@ -58,6 +67,9 @@ const mountPreviewStream = (
           const handle = createPreviewHandle(app, viewport, {
             onStitchClick: (x, y) => {
               Queue.offerUnsafe(queue, Message.ClickedStitch({ x, y }))
+            },
+            onZoomChange: percent => {
+              Queue.offerUnsafe(queue, Message.ChangedPreviewZoom({ percent }))
             },
           })
           setPreviewHandle(hostId, handle)
@@ -94,6 +106,7 @@ export const MountPreview = Mount.defineStream('MountPreview', {
     Message.SucceededMountPreview,
     Message.FailedMountPreview,
     Message.ClickedStitch,
+    Message.ChangedPreviewZoom,
   ],
   execute: ({ element, hostId }) => mountPreviewStream(element, hostId),
 })

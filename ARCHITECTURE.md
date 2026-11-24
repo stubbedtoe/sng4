@@ -52,7 +52,6 @@ flowchart TD
     subgraph Rendering["Rendering projection"]
         MNT[Mount: owns Pixi Application + viewport lifecycle]
         HOST[PreviewHandle: setSource / setPattern / fitWorld]
-        OVL[Canvas2D overlay: grid lines + stitch symbols]
         VP[pixi-viewport: drag, wheel, pinch, clampZoom]
     end
 
@@ -71,7 +70,6 @@ flowchart TD
     PAT --> PDF
     MNT --> HOST
     HOST --> VP
-    HOST --> OVL
     VP --> CANVAS[HTML canvas element]
     CMD --> PDF
 ```
@@ -130,12 +128,18 @@ prior results automatically. There is no dynamic loading yet by design.
   estimate basis, fabric suggestion, and a palette key with per-colour stitch
   counts and skein estimates, followed by paginated grid pages with per-stitch
   symbols, coordinates every 10 stitches, heavier 10-stitch lines, a 2-stitch
-  page overlap, and page numbers.
+  page overlap, and page numbers. Export re-runs `Pipeline.evaluate` with the
+  current `Project`; the project is unchanged since the run that produced the
+  preview, so this is a guaranteed cache hit returning the full `Pattern`.
 
 ### Rendering (`src/rendering/pixi/`)
 
 A Foldkit `Mount` owns the Pixi `Application` and `pixi-viewport` lifecycle:
-acquire on element insert, release on removal. The live handle sits in a small
+acquire on element insert, release on removal. The stream yields once before
+creating the `Application`: Foldkit forks Mount acquisition synchronously
+inside its measured patch phase, so the WebGL context creation and shader
+compilation would otherwise be billed to whatever patch inserted the canvas
+(a slow-patch warning on an unrelated Message). The live handle sits in a small
 module-level registry (the same pattern as the Foldkit map example), so
 Commands such as `SyncPreview` and `FitPreview` can reach it without storing
 browser objects in the Model. Pan, wheel zoom, touch drag, and pinch come from
@@ -143,22 +147,62 @@ pixi-viewport plugins, with zoom clamped to sensible bounds and fit handled by
 `fitWorld`.
 
 The pattern renders as a nearest-neighbour texture built from the stitch grid
-and palette colours, so it stays sharp at any zoom. A Canvas2D overlay sprite
-(redrawn on a dirty flag after pan/zoom/resize) draws grid lines, heavier
-lines every 10 stitches, and one symbol per stitch once cells are large
-enough. Clicking a stitch emits a Foldkit Message and the sidebar shows the
-lookup (symbol, floss name and number, colour swatch). Viewport interaction
-state never becomes a domain transformation.
+and palette colours, so it stays sharp at any zoom. The canvas host stays
+mounted across source states (empty/loading/failed views are overlays, not
+branch replacements): replacing it would destroy and recreate the whole
+Pixi/WebGL stack on every image load and reset the zoom. There is
+deliberately no grid or symbol overlay on the canvas right now: keeping one
+pixel-locked to
+the stitch edges across zoom, pan, and DPR proved finicky — the placement
+formula (`floor(d − 0.5)` in device px, strict tie-breaking) was verified
+exact against the live renderer with pixel probes, but the visual result
+still read as drifting at some zoom levels — so the overlay was removed
+pending a re-think, likely a WebGL-native grid or render-texture tiling
+rather than a Canvas2D sprite stretched over the viewport. Clicking a stitch
+still works (the viewport reports world coordinates) and the sidebar shows
+the lookup (symbol, floss name and number, colour swatch); symbols remain
+visible there and in the PDF chart. The current zoom is shown in the canvas
+overlay with zoom-in/zoom-out buttons, expressed relative to the
+fit-to-canvas scale (the initial size, 100%). The handle reports percent
+changes on pixi-viewport's `zoomed` event (throttled to whole percents, and
+recomputed when a resize changes the fit scale) through a Mount message, and
+`zoomBy` rescales around the current viewport centre. Zooming out below 100%
+anchors the content centre to the canvas centre, for both the buttons and
+the wheel/pinch path. Pinch, wheel, and buttons all arrive through the same
+`zoomed` event, so the readout stays honest regardless of input. The source
+image and its derived pattern share a content id (the `sourceId`), so
+switching between them — or re-running the pipeline — carries the zoom
+percent and viewport centre across instead of re-fitting; only a genuinely
+new source id fits. Canvas resizes (window changes) also preserve the
+percent: the scale is re-derived from the new fit scale, so 100% tracks the
+canvas. Viewport
+interaction state never becomes a domain transformation.
 
 ### Foldkit shell (`src/main.ts`, `src/update.ts`, `src/view/`)
 
 Standard Foldkit architecture: `init`/`update`/`view`, Commands for file
 loading, pipeline runs, preview sync, fit, and PDF export, and a responsive
-layout (canvas on top, workflow controls below on mobile; sidebar on desktop).
-A `runId` on every pipeline request makes results stale-proof: a slow run that
+layout (canvas on top, workflow controls below on mobile; sidebar on
+desktop). On wide devices the app shell is anchored to exactly the viewport
+height (`md:h-dvh md:overflow-hidden`) and the sidebar scrolls internally,
+so re-renders that grow or shrink sidebar content cannot resize the canvas
+area — the preview canvas has a stable height and never shifts.
+Each sidebar section and the toolbar are memoized with `createLazy` against
+their own Model dependencies (reference-stable thanks to structural sharing),
+so a message only rebuilds the subtrees it actually affects. A `runId` on
+every pipeline request makes results stale-proof: a slow run that
 finishes after a newer request is ignored. `freezeModel` is disabled in dev
-because the Model holds megabyte-scale preview grids that deep-freezing after
-every update would dominate interaction latency.
+because the Model holds the stitch-index grid (`Uint8Array`) that deep-freezing
+after every update would dominate interaction latency.
+
+The ready state is deliberately slim: `PreviewStatus.Ready` holds a
+`PatternSummary` (dimensions, finished dimensions, estimate basis, fabric
+suggestion, key, usage, palette) plus one palette index per stitch. The
+per-stitch `cells` records and the `preview.maybePixels` raster are derived
+data and never enter the Model — they stay in the pipeline stage cache, are
+rebuilt on demand (stitch clicks index into the key; PDF export re-runs the
+pipeline as a cache hit), and remain part of the domain `Pattern` only because
+the spec-derived contract asserts them.
 
 ## Testing
 

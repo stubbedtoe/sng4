@@ -8,20 +8,18 @@ export interface PatternRenderData {
   readonly height: number
   readonly stitches: Uint8Array
   readonly colours: ReadonlyArray<Colour>
-  readonly symbols: ReadonlyArray<string>
 }
 
 export type PreviewDisplayMode = 'source' | 'pattern'
 
 export interface PreviewHandle {
-  readonly setSource: (pixels: ImagePixels) => void
-  readonly setPattern: (data: PatternRenderData) => void
+  readonly setSource: (pixels: ImagePixels, contentId: string) => void
+  readonly setPattern: (data: PatternRenderData, contentId: string) => void
   readonly setMode: (mode: PreviewDisplayMode) => void
+  readonly zoomBy: (factor: number) => void
   readonly fitWorld: () => void
   readonly destroy: () => void
 }
-
-const MAX_OVERLAY_DIMENSION = 4096
 
 const pixelsToCanvas = (pixels: ImagePixels): HTMLCanvasElement => {
   const canvas = document.createElement('canvas')
@@ -64,6 +62,7 @@ const patternToCanvas = (data: PatternRenderData): HTMLCanvasElement => {
 
 export interface PreviewHostHooks {
   readonly onStitchClick: (x: number, y: number) => void
+  readonly onZoomChange: (percent: number) => void
 }
 
 export const createPreviewHandle = (
@@ -74,20 +73,42 @@ export const createPreviewHandle = (
   const contentRoot = new Container()
   viewport.addChild(contentRoot)
 
-  const overlayCanvas = document.createElement('canvas')
-  const overlayTexture = Texture.from(overlayCanvas)
-  const overlaySprite = new Sprite(overlayTexture)
-  overlaySprite.eventMode = 'none'
-  overlaySprite.visible = false
-  viewport.addChild(overlaySprite)
-
   let baseSprite: Sprite | undefined
   let mode: PreviewDisplayMode = 'pattern'
   let patternData: PatternRenderData | undefined
-  let contentKey = ''
+  // identity of the loaded source; the source image and its derived pattern
+  // share it, so switching between them is not a content change
+  let lastContentId = ''
   let worldWidth = 1
   let worldHeight = 1
-  let overlayDirty = true
+  // scale that fits the content to the canvas; the zoom readout is relative
+  // to this (fit = 100%)
+  let fitScale = 1
+  let lastZoomPercent = 100
+
+  const currentZoomPercent = () =>
+    Math.max(1, Math.round((viewport.scale.x / fitScale) * 100))
+
+  const notifyZoomChange = () => {
+    const percent = currentZoomPercent()
+    if (percent !== lastZoomPercent) {
+      lastZoomPercent = percent
+      hooks.onZoomChange(percent)
+    }
+  }
+
+  // below 100% the content is smaller than the canvas: anchor its centre to
+  // the canvas centre regardless of how the zoom got there
+  const centerIfZoomedOut = () => {
+    if (viewport.scale.x < fitScale) {
+      viewport.moveCenter(worldWidth / 2, worldHeight / 2)
+    }
+  }
+
+  viewport.on('zoomed', () => {
+    centerIfZoomedOut()
+    notifyZoomChange()
+  })
 
   const setBaseTexture = (canvas: HTMLCanvasElement, nearest: boolean) => {
     const texture = Texture.from(canvas)
@@ -109,120 +130,39 @@ export const createPreviewHandle = (
       worldWidth,
       worldHeight,
     )
+    fitScale = Math.max(
+      Math.min(app.screen.width / worldWidth, app.screen.height / worldHeight),
+      0.0001,
+    )
   }
 
-  const redrawOverlay = () => {
-    overlayDirty = false
-    if (mode !== 'pattern' || patternData === undefined) {
-      overlaySprite.visible = false
-      return
-    }
-
-    const bounds = viewport.getVisibleBounds()
-    const scale = viewport.scale.x
-    const resolution = app.renderer.resolution
-    const canvasWidth = Math.max(
-      16,
-      Math.min(
-        MAX_OVERLAY_DIMENSION,
-        Math.ceil(bounds.width * scale * resolution),
-      ),
+  // Rescale so the reported zoom percent holds against the current fit
+  // scale, keeping the given world point at the viewport centre. Used when
+  // the content changes shape but the zoom level must not (source <->
+  // pattern switch, re-run) and when the canvas itself is resized (the
+  // percent is relative to the fit scale, so 100% re-fits).
+  const rescaleToPercent = (center: { x: number; y: number }) => {
+    const scale = Math.min(
+      120,
+      Math.max(0.05, fitScale * (lastZoomPercent / 100)),
     )
-    const canvasHeight = Math.max(
-      16,
-      Math.min(
-        MAX_OVERLAY_DIMENSION,
-        Math.ceil(bounds.height * scale * resolution),
-      ),
-    )
-    overlayCanvas.width = canvasWidth
-    overlayCanvas.height = canvasHeight
-    const context = overlayCanvas.getContext('2d')
-    if (context === null) {
-      overlaySprite.visible = false
-      return
-    }
-    context.clearRect(0, 0, canvasWidth, canvasHeight)
-
-    const pixelsPerUnit: number = canvasWidth / Math.max(bounds.width, 0.0001)
-    const toCanvasX = (worldX: number) => (worldX - bounds.x) * pixelsPerUnit
-    const toCanvasY = (worldY: number) => (worldY - bounds.y) * pixelsPerUnit
-    const { width, height, symbols } = patternData
-    const cellPx = pixelsPerUnit
-
-    const minorStep = cellPx >= 7 ? 1 : 10
-    const firstColumn = Math.max(0, Math.floor(bounds.x))
-    const lastColumn = Math.min(width, Math.ceil(bounds.x + bounds.width))
-    const firstRow = Math.max(0, Math.floor(bounds.y))
-    const lastRow = Math.min(height, Math.ceil(bounds.y + bounds.height))
-
-    for (let column = firstColumn; column <= lastColumn; column++) {
-      if (column % minorStep !== 0 && column % 10 !== 0) {
-        continue
-      }
-      context.strokeStyle =
-        column % 10 === 0 ? 'rgba(15, 23, 42, 0.5)' : 'rgba(15, 23, 42, 0.16)'
-      context.lineWidth = column % 10 === 0 ? 1.4 : 1
-      context.beginPath()
-      context.moveTo(toCanvasX(column), 0)
-      context.lineTo(toCanvasX(column), canvasHeight)
-      context.stroke()
-    }
-    for (let row = firstRow; row <= lastRow; row++) {
-      if (row % minorStep !== 0 && row % 10 !== 0) {
-        continue
-      }
-      context.strokeStyle =
-        row % 10 === 0 ? 'rgba(15, 23, 42, 0.5)' : 'rgba(15, 23, 42, 0.16)'
-      context.lineWidth = row % 10 === 0 ? 1.4 : 1
-      context.beginPath()
-      context.moveTo(0, toCanvasY(row))
-      context.lineTo(canvasWidth, toCanvasY(row))
-      context.stroke()
-    }
-
-    if (cellPx >= 13) {
-      context.fillStyle = 'rgba(15, 23, 42, 0.82)'
-      context.font = `${Math.max(8, Math.floor(cellPx * 0.58))}px ui-monospace, Menlo, monospace`
-      context.textAlign = 'center'
-      context.textBaseline = 'middle'
-      const { stitches } = patternData
-      for (let row = firstRow; row < lastRow; row++) {
-        for (let column = firstColumn; column < lastColumn; column++) {
-          const colourIndex = stitches[row * width + column]
-          const symbol =
-            colourIndex === undefined ? undefined : symbols[colourIndex]
-          if (symbol === undefined) {
-            continue
-          }
-          context.fillText(
-            symbol,
-            toCanvasX(column + 0.5),
-            toCanvasY(row + 0.52),
-          )
-        }
-      }
-    }
-
-    overlaySprite.visible = true
-    overlaySprite.position.set(bounds.x, bounds.y)
-    overlaySprite.width = bounds.width
-    overlaySprite.height = bounds.height
-    overlayTexture.source.update()
+    viewport.scale.set(scale)
+    viewport.moveCenter(center)
   }
 
-  app.ticker.add(() => {
-    if (overlayDirty) {
-      redrawOverlay()
+  // Swap content, then either fit (genuinely new content) or carry the
+  // current zoom level and viewport centre across (source <-> pattern
+  // switch, or a re-run of the same source).
+  const applyContent = (contentId: string, syncSize: () => void) => {
+    syncSize()
+    if (contentId !== lastContentId) {
+      lastContentId = contentId
+      viewport.fitWorld(true)
+    } else {
+      rescaleToPercent(viewport.center)
     }
-  })
-
-  viewport.on('moved', () => {
-    overlayDirty = true
-  })
-  viewport.on('zoomed', () => {
-    overlayDirty = true
-  })
+    notifyZoomChange()
+  }
 
   const resizeObserver = new ResizeObserver(() => {
     const parent = app.canvas.parentElement
@@ -239,7 +179,16 @@ export const createPreviewHandle = (
       worldWidth,
       worldHeight,
     )
-    overlayDirty = true
+    fitScale = Math.max(
+      Math.min(app.screen.width / worldWidth, app.screen.height / worldHeight),
+      0.0001,
+    )
+    // no content yet (world is still the 1x1 placeholder): nothing to
+    // rescale, and the placeholder fit scale would produce a bogus zoom
+    if (lastContentId !== '') {
+      rescaleToPercent(viewport.center)
+    }
+    notifyZoomChange()
   })
   if (app.canvas.parentElement !== null) {
     resizeObserver.observe(app.canvas.parentElement)
@@ -262,38 +211,36 @@ export const createPreviewHandle = (
   })
 
   return {
-    setSource: pixels => {
+    setSource: (pixels, contentId) => {
       setBaseTexture(pixelsToCanvas(pixels), false)
-      syncWorldSize(pixels.width, pixels.height)
       patternData = undefined
-      const key = `source:${pixels.width}x${pixels.height}`
-      if (key !== contentKey) {
-        contentKey = key
-        viewport.fitWorld(true)
-      }
-      overlayDirty = true
+      applyContent(contentId, () => syncWorldSize(pixels.width, pixels.height))
     },
 
-    setPattern: data => {
+    setPattern: (data, contentId) => {
       patternData = data
       setBaseTexture(patternToCanvas(data), true)
-      syncWorldSize(data.width, data.height)
-      const key = `pattern:${data.width}x${data.height}`
-      if (key !== contentKey) {
-        contentKey = key
-        viewport.fitWorld(true)
-      }
-      overlayDirty = true
+      applyContent(contentId, () => syncWorldSize(data.width, data.height))
     },
 
     setMode: nextMode => {
       mode = nextMode
-      overlayDirty = true
+    },
+
+    zoomBy: factor => {
+      const center = viewport.center
+      viewport.scale.set(viewport.scale.x * factor)
+      if (viewport.scale.x < fitScale) {
+        viewport.moveCenter(worldWidth / 2, worldHeight / 2)
+      } else {
+        viewport.moveCenter(center)
+      }
+      notifyZoomChange()
     },
 
     fitWorld: () => {
       viewport.fitWorld(true)
-      overlayDirty = true
+      notifyZoomChange()
     },
 
     destroy: () => {

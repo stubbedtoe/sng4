@@ -16,3 +16,12 @@ This app is **Atomsphere**, a local-first image-to-cross-stitch converter. Read 
 - The pixel pipeline (decode -> composite -> resize -> quantise -> map/dither -> pattern) lives in `src/transforms/` and `src/services/Pipeline.ts`. Stage results are cached by keys that include the input, parameters, and registry version; cache-hit behaviour (identical object identity) is tested, so keep keys complete when adding stages.
 - PixiJS and pixi-viewport are render-only. The Model never holds DOM nodes, Pixi objects, or decoded pixels (those live in the `PixelStore` service). `freezeModel: false` in `src/entry.ts` is deliberate because the Model carries megabyte-scale `Uint8Array` grids.
 - Domain vocabulary: a stitch grid is a `Pattern` (1-based `cells`, symbol `key`, `usage`); palette entries are `Floss` values; image-derived palettes use brand `Custom` until a real DMC/Anchor catalogue ships.
+
+## Vendored Repositories
+
+This project vendors external repositories under @repos/
+
+- Use vendored repositories as read-only reference material when working with related libraries
+- Prefer examples and patterns from the vendored source code over generated guesses or web search results
+- Do not edit files under @repos/ unless explicitly asked
+- Do not import from @repos/ - application code should continue importing from normal package dependencies
